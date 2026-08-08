@@ -1,0 +1,29 @@
+# Evaluation Result
+
+# Use this template when applying the eval-ai-output skill.
+# Fill in every field. Never leave a field blank — if a gate passes,
+# the detail should say why it passes, not just "ok".
+
+gate_1_functional:
+  status: pass | fail
+  detail: ""
+
+gate_2_logical:
+  status: pass | fail
+  detail: ""
+  failing_case: ""  # required if fail
+
+gate_3_quality:
+  status: pass | fail | pass_with_notes
+  detail: ""
+  suggestion: ""  # required if fail or pass_with_notes
+
+gate_4_hallucination:
+  status: pass | fail
+  detail: ""
+  fabricated_reference: ""  # required if fail
+
+verdict: ACCEPT | REJECT
+reason: ""  # required if REJECT
+feedback_to_agent: >
+  ""  # required if REJECT — precise, actionable, includes line numbers
