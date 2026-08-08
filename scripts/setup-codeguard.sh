@@ -3,10 +3,11 @@
 # Run from the project root: ./scripts/setup-codeguard.sh
 #
 # Installs:
-#   - codeguard         — security guardrails during code generation
-#   - codeguard-review  — security audit of diffs (23 rules)
-#   - eval-ai-output    — 4-gate validation (Functional, Logical, Quality, Hallucination)
-#   - implement         — updated implement flow (wired to all three skills)
+#   - tdd                — test-driven development (red-green-refactor)
+#   - codeguard          — security guardrails during code generation
+#   - codeguard-review   — security audit of diffs (23 rules)
+#   - eval-ai-output     — 4-gate validation (Functional, Logical, Quality, Hallucination)
+#   - implement          — updated implement flow (wired to all five skills)
 
 set -euo pipefail
 
@@ -33,6 +34,7 @@ install_skill() {
     echo "  $emoji $name installed"
 }
 
+install_skill "tdd"                "🧪"
 install_skill "codeguard"          "🔒"
 install_skill "codeguard-review"   "🛡️"
 install_skill "eval-ai-output"     "✅"
@@ -45,7 +47,7 @@ if [ -d "$PI_SKILLS_DIR/implement" ]; then
     rm -rf "$PI_SKILLS_DIR/implement"
 fi
 cp -r "$PROJECT_ROOT/.pi/skills/implement" "$PI_SKILLS_DIR/implement"
-echo "  ⚙️  implement installed (wired to codeguard + eval-ai-output + codeguard-review)"
+echo "  ⚙️  implement installed (wired to tdd + codeguard + eval-ai-output + codeguard-review)"
 
 # ── Done ────────────────────────────────────────────────────────
 
@@ -57,9 +59,9 @@ echo "  grill → to-spec → to-tickets → implement"
 echo "                                  │"
 echo "       ┌──────────────────────────┘"
 echo "       │"
-echo "       ├─ /codeguard (security context loaded)"
-echo "       ├─ /tdd (red-green-refactor)"
-echo "       ├─ /eval-ai-output (4-gate validation)"
+echo "       ├─ /codeguard (security context)"
+echo "       ├─ /tdd (test → red → code → green)"
+echo "       ├─ /eval-ai-output (4-gate check)"
 echo "       ├─ /codeguard-review (23-rule security audit)"
 echo "       └─ /code-review (standards + spec)"
 echo ""
