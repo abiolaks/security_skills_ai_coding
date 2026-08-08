@@ -506,6 +506,407 @@ feedback_to_agent: >
 
 ---
 
+## Walkthrough Examples
+
+Two end-to-end examples showing exactly how this workflow produces secure, verified code.
+
+---
+
+### Example 1: TDD — Building a Course Enrollment Feature
+
+**The ticket:** "As a student, I can enroll in a course by providing my student ID and course ID. I cannot enroll twice in the same course. The course must not be full."
+
+#### Step 1: Agree on seams (what to test)
+
+Before writing code, confirm the public interface with your team:
+
+```typescript
+// Seam: the enroll() function — the public boundary we test at
+function enroll(studentId: string, courseId: string): Promise<Enrollment>
+```
+
+No tests on internal helpers. No testing database queries directly. Just `enroll()`.
+
+#### Step 2: RED — Write the first failing test
+
+```typescript
+// tests/enrollment.test.ts
+import { enroll } from "../src/enrollment";
+
+test("enroll creates an enrollment for a student in a course", async () => {
+  const enrollment = await enroll("student-1", "course-101");
+
+  expect(enrollment.id).toBeDefined();
+  expect(enrollment.studentId).toBe("student-1");
+  expect(enrollment.courseId).toBe("course-101");
+  expect(enrollment.enrolledAt).toBeInstanceOf(Date);
+});
+```
+
+Run it → **FAILS** (enroll doesn't exist yet). Good — RED confirmed.
+
+#### Step 3: GREEN — Write minimal code to pass
+
+```typescript
+// src/enrollment.ts
+interface Enrollment {
+  id: string;
+  studentId: string;
+  courseId: string;
+  enrolledAt: Date;
+}
+
+async function enroll(studentId: string, courseId: string): Promise<Enrollment> {
+  return {
+    id: crypto.randomUUID(),
+    studentId,
+    courseId,
+    enrolledAt: new Date(),
+  };
+}
+
+export { enroll, Enrollment };
+```
+
+Run the test → **PASSES**. GREEN. Stop writing code.
+
+#### Step 4: RED — Next slice: duplicate prevention
+
+```typescript
+test("enroll rejects duplicate enrollment", async () => {
+  await enroll("student-1", "course-101");
+
+  await expect(
+    enroll("student-1", "course-101")
+  ).rejects.toThrow("Already enrolled");
+});
+```
+
+Run it → **FAILS** (no duplicate check yet). RED confirmed.
+
+#### Step 5: GREEN — Add duplicate check
+
+```typescript
+async function enroll(studentId: string, courseId: string): Promise<Enrollment> {
+  // Check for existing enrollment
+  const existing = await db.query(
+    "SELECT 1 FROM enrollments WHERE student_id = ? AND course_id = ?",
+    [studentId, courseId]
+  );
+  if (existing.length > 0) {
+    throw new ConflictError("Already enrolled");
+  }
+
+  await db.query(
+    "INSERT INTO enrollments (id, student_id, course_id, enrolled_at) VALUES (?, ?, ?, ?)",
+    [id, studentId, courseId, new Date()]
+  );
+
+  return { id, studentId, courseId, enrolledAt: new Date() };
+}
+```
+
+Note: parameterized queries — no SQL injection. CodeGuard's always-on rules at work.
+
+#### Step 6: RED — Edge case: course capacity
+
+```typescript
+test("enroll rejects if course is at capacity", async () => {
+  // Seed: course-101 has capacity of 2, already has 2 students
+  await db.seed({ course: "course-101", capacity: 2, enrolled: 2 });
+
+  await expect(
+    enroll("student-3", "course-101")
+  ).rejects.toThrow("Course is full");
+});
+```
+
+Run → FAILS → Write code → PASSES.
+
+#### Step 7: Full test suite for enrollment
+
+```typescript
+// tests/enrollment.test.ts — complete
+describe("enroll", () => {
+  // Happy path
+  test("creates enrollment with id, studentId, courseId, and timestamp", async () => {
+    const enrollment = await enroll("student-1", "course-101");
+    expect(enrollment.studentId).toBe("student-1");
+    expect(enrollment.courseId).toBe("course-101");
+    expect(enrollment.enrolledAt).toBeInstanceOf(Date);
+  });
+
+  // Edge cases
+  test("rejects duplicate enrollment with 409 Conflict", async () => {
+    await enroll("student-1", "course-101");
+    await expect(enroll("student-1", "course-101"))
+      .rejects.toThrow("Already enrolled");
+  });
+
+  test("rejects if course is at capacity", async () => {
+    await db.seed({ course: "course-101", capacity: 2, enrolled: 2 });
+    await expect(enroll("student-3", "course-101"))
+      .rejects.toThrow("Course is full");
+  });
+
+  test("rejects if student does not exist", async () => {
+    await expect(enroll("nonexistent", "course-101"))
+      .rejects.toThrow("Student not found");
+  });
+
+  test("rejects if course does not exist", async () => {
+    await expect(enroll("student-1", "nonexistent"))
+      .rejects.toThrow("Course not found");
+  });
+
+  test("handles concurrent enrollment without duplicates", async () => {
+    const results = await Promise.allSettled([
+      enroll("student-1", "course-101"),
+      enroll("student-1", "course-101"),
+      enroll("student-1", "course-101"),
+    ]);
+    const fulfilled = results.filter(r => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1); // Only one succeeds
+  });
+});
+```
+
+**What TDD produced:** 6 tests, each driving one slice of behavior. Happy path + duplicates + capacity + missing entities + concurrency. Every edge case was a RED test first, then code. No code exists without a test demanding it.
+
+---
+
+### Example 2: eval-ai-output — Evaluating AI-Generated Payment Code
+
+**The scenario:** The agent just generated a `processRefund` function. Before running tests, apply the 4-gate evaluation.
+
+#### The AI-generated code (before evaluation)
+
+```typescript
+// src/payments.ts — AI-generated
+import { stripe } from "stripe";
+import { db } from "./database";
+
+async function processRefund(paymentId: string, amount: number) {
+  const payment = await db.query(`SELECT * FROM payments WHERE id = ${paymentId}`);
+
+  if (payment.status === 3) {
+    throw new Error("Cannot refund");
+  }
+
+  const refund = await stripe.refunds.create({
+    payment_intent: payment.stripeId,
+    amount: amount,
+  });
+
+  await db.query(`UPDATE payments SET status = 3 WHERE id = ${paymentId}`);
+
+  return refund;
+}
+
+export { processRefund };
+```
+
+#### Apply Gate 1: Functional
+
+```yaml
+gate_1_functional: fail
+detail: "Import path is wrong — it's 'stripe' not 'stripe'. The package exports Stripe class, not a named export."
+failing_line: "Line 1: import { stripe } from 'stripe'"
+```
+
+**Verdict:** REJECT. Gate 1 failed — the code won't even run. Stop here, don't proceed to Gate 2.
+
+**Feedback to agent:**
+> Fix import on line 1: `import Stripe from 'stripe'; const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);`
+
+Agent rewrites → re-evaluate → Gate 1 now passes.
+
+#### Apply Gate 2: Logical
+
+```yaml
+gate_2_logical: fail
+detail: "SQL injection: paymentId is concatenated directly into query string. No parameterization."
+failing_case: "paymentId = '1; DROP TABLE payments; --' would execute arbitrary SQL"
+```
+
+Also:
+
+```yaml
+gate_2_logical: fail
+detail: "No validation on refund amount. Negative amount or amount exceeding payment not checked."
+failing_case: "amount = -100 would create money, amount = 999999 would refund more than paid"
+```
+
+**Verdict:** REJECT. Multiple logical failures.
+
+**Feedback to agent:**
+> 1. Use parameterized query on lines 5 and 15: `db.query('SELECT * FROM payments WHERE id = ?', [paymentId])`
+> 2. Add amount validation before processing: reject if amount <= 0 or amount > payment.amount
+
+Agent rewrites → re-evaluate → Gate 2 now passes.
+
+#### Apply Gate 3: Quality
+
+```yaml
+gate_3_quality: pass_with_notes
+detail: "Status magic number '3' used in two places (lines 7 and 15). Payment status is refunded but '3' doesn't communicate that."
+suggestion: "Extract as constant: const PAYMENT_STATUS = { COMPLETED: 1, PENDING: 2, REFUNDED: 3 } at top of file."
+```
+
+**Verdict:** PASS_WITH_NOTES. Not blocking, but flag for cleanup during refactor phase.
+
+#### Apply Gate 4: Hallucination
+
+```yaml
+gate_4_hallucination: pass
+detail: "Verified via opensrc: stripe.refunds.create() accepts payment_intent and amount. Parameters match Stripe API v2023-08-16."
+```
+
+All imports are real, all API calls match source. Gate 4 passes.
+
+#### Final verdict after all corrections
+
+```yaml
+gate_1_functional: pass
+gate_2_logical: pass
+gate_3_quality: pass_with_notes
+  suggestion: "Extract status magic numbers as named constants"
+gate_4_hallucination: pass
+verdict: ACCEPT
+reason: "All blocking gates pass. One non-blocking quality note."
+```
+
+**Proceed to tests.** The code is functional, logically sound, non-hallucinated, and has one quality note for later.
+
+#### The corrected code (after evaluation)
+
+```typescript
+// src/payments.ts — after eval-ai-output corrections
+import Stripe from "stripe";
+import { db } from "./database";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+
+const PAYMENT_STATUS = {
+  COMPLETED: 1,
+  PENDING: 2,
+  REFUNDED: 3,
+} as const;
+
+async function processRefund(paymentId: string, amount: number) {
+  // ✅ Parameterized query — no SQL injection
+  const [payment] = await db.query(
+    "SELECT * FROM payments WHERE id = ?",
+    [paymentId]
+  );
+
+  if (!payment) {
+    throw new Error("Payment not found");
+  }
+
+  // ✅ Named constant instead of magic number
+  if (payment.status === PAYMENT_STATUS.REFUNDED) {
+    throw new Error("Payment already refunded");
+  }
+
+  // ✅ Input validation
+  if (amount <= 0) {
+    throw new Error("Refund amount must be positive");
+  }
+  if (amount > payment.amount) {
+    throw new Error("Refund amount exceeds payment amount");
+  }
+
+  const refund = await stripe.refunds.create({
+    payment_intent: payment.stripeId,
+    amount,
+  });
+
+  // ✅ Parameterized query
+  await db.query(
+    "UPDATE payments SET status = ? WHERE id = ?",
+    [PAYMENT_STATUS.REFUNDED, paymentId]
+  );
+
+  return refund;
+}
+
+export { processRefund };
+```
+
+**Before vs after:**
+
+| Issue | Before | After |
+|-------|--------|-------|
+| Import | `import { stripe } from "stripe"` ❌ | `import Stripe from "stripe"` ✅ |
+| SQL injection | `SELECT * FROM payments WHERE id = ${paymentId}` ❌ | Parameterized query ✅ |
+| Magic number | `status === 3` ❌ | `PAYMENT_STATUS.REFUNDED` ✅ |
+| Missing validation | No amount checks ❌ | Positive + ceiling checks ✅ |
+| Hallucination check | Not verified ❌ | Stripe API verified via opensrc ✅ |
+
+---
+
+### Example 3: The Full Pipeline on One Feature
+
+Putting it all together — the same `processRefund` feature through every skill:
+
+```
+📋 TICKET: "Admins can refund a payment. Refund amount must not exceed original.
+            Already-refunded payments cannot be refunded again."
+
+┌─ /implement starts ─────────────────────────────────────────────┐
+│                                                                  │
+│  🔒 /codeguard loads:                                            │
+│     "This is a payment feature → load API security rules,        │
+│      stripe key handling rules, parameterized query rules"       │
+│                                                                  │
+│  🧪 /tdd RED:                                                    │
+│     test("processRefund refunds a completed payment")            │
+│     → FAILS (no function yet)                                    │
+│                                                                  │
+│  🧪 /tdd GREEN:                                                  │
+│     Minimal processRefund that creates a Stripe refund           │
+│     → PASSES                                                     │
+│                                                                  │
+│  🧪 /tdd RED (edge cases):                                       │
+│     test("rejects refund for already-refunded payment")          │
+│     test("rejects refund exceeding original amount")             │
+│     test("rejects negative refund amount")                       │
+│     test("rejects refund for non-existent payment")              │
+│     → All FAIL (no guards yet)                                   │
+│                                                                  │
+│  🧪 /tdd GREEN:                                                  │
+│     Add status check, amount validation, existence check          │
+│     → All PASS                                                   │
+│                                                                  │
+│  ✅ /eval-ai-output:                                             │
+│     Gate 1 (Functional): WARNING — import { stripe } from...    │
+│                          should be: import Stripe from "stripe"  │
+│     → Agent fixes import                                         │
+│     Gate 2 (Logical): PASS                                       │
+│     Gate 3 (Quality): PASS_WITH_NOTES — extract magic numbers    │
+│     Gate 4 (Hallucination): PASS — stripe.refunds.create verified│
+│     Verdict: ACCEPT                                              │
+│                                                                  │
+│  🛡️ /codeguard-review (diff audit):                              │
+│     ✅ No hardcoded credentials (STRIPE_SECRET_KEY from env)     │
+│     ✅ Parameterized queries (SQL injection prevented)            │
+│     ✅ Input validation present                                   │
+│     ⚠️ MEDIUM: Missing rate limiting on refund endpoint          │
+│     → Add rate limit middleware                                   │
+│                                                                  │
+│  🔍 /code-review:                                                │
+│     Standards: PASS                                              │
+│     Spec: PASS — all ticket requirements met                     │
+│                                                                  │
+│  ✅ Commit                                                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Result:** A payment refund feature that is tested, validated, hallucination-free, SQL-injection-proof, and has no hardcoded secrets — before it ever reaches a human reviewer.
+
+---
+
 ## Quick Start
 
 ### Prerequisites
