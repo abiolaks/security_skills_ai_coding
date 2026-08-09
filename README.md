@@ -508,7 +508,9 @@ feedback_to_agent: >
 
 ## Walkthrough Examples
 
-Two end-to-end examples showing exactly how this workflow produces secure, verified code.
+> **📖 Full walkthrough:** [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) — building an AI Document Summarizer from grill to commit, step by step. The best place to start for new team members.
+
+Three examples showing exactly how this workflow produces secure, verified code.
 
 ---
 
