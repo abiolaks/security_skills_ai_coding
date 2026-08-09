@@ -38,10 +38,10 @@ client = OpenAI(
 ```python
 # Happy path works. But what about:
 @app.post("/chat")
-def chat_endpoint(request):
-    message = request.json["message"]
-    reply = chat(message)   # No rate limit. No size check.
-    return {"reply": reply} # Someone sends 1MB of text. $50 API bill.
+async def chat_endpoint(request: Request):
+    body = await request.json()
+    reply = chat(body["message"])  # No rate limit. No size check.
+    return {"reply": reply}         # Someone sends 1MB of text. $50 API bill.
 ```
 
 **Problem:** No rate limiting, no input validation, no error handling. Your AI feature works perfectly — until it doesn't, and you're debugging at 2 AM.
@@ -56,16 +56,19 @@ Here's code an AI agent generated for a RAG endpoint. We'll run it through the p
 
 ```python
 # ❌ AI-generated: a RAG query endpoint
+from fastapi import FastAPI, Request
 from openai import Embedding
 from pinecone import Pinecone
 
+app = FastAPI()
 API_KEY = "sk-proj-abc123"  # Hardcoded
 pc = Pinecone(api_key=API_KEY)
 index = pc.Index("docs")
 
 @app.post("/rag/query")
-def rag_query(request):
-    query = request.json["q"]
+async def rag_query(request: Request):
+    body = await request.json()
+    query = body["q"]
     embedding = Embedding.generate(  # Hallucinated method
         model="text-embedding-3-small",
         input=query,
@@ -81,30 +84,33 @@ def rag_query(request):
 | **codeguard** | `API_KEY = "sk-proj-..."` — hardcoded secret. Must use `os.environ` |
 | **codeguard** | No rate limiting on the endpoint. API calls cost money |
 | **eval-ai-output Gate 1** | `from openai import Embedding` — wrong import. It's `from openai import OpenAI` |
-| **eval-ai-output Gate 2** | No input validation on `request.json["q"]`. Empty query costs money |
+| **eval-ai-output Gate 2** | No input validation on `body["q"]`. Empty query costs money |
 | **eval-ai-output Gate 4** | `Embedding.generate()` — hallucinated. It's `client.embeddings.create()` |
 
 ```python
 # ✅ After the pipeline:
 import os
+from fastapi import FastAPI, Request, HTTPException
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from openai import OpenAI
 from pinecone import Pinecone
-from flask import Flask, request, jsonify
-from flask_limiter import Limiter
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
 index = pc.Index("docs")
 
-app = Flask(__name__)
-limiter = Limiter(app, key_func=lambda: request.remote_addr)
+app = FastAPI()
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
 
 @app.post("/rag/query")
-@limiter.limit("30 per minute")
-def rag_query():
-    query = (request.json or {}).get("q", "").strip()
+@limiter.limit("30/minute")
+async def rag_query(request: Request):
+    body = await request.json()
+    query = (body or {}).get("q", "").strip()
     if not query or len(query) > 1000:
-        return jsonify({"error": "Invalid query"}), 400
+        raise HTTPException(status_code=400, detail="Invalid query")
 
     embedding = client.embeddings.create(
         model="text-embedding-3-small",
@@ -114,7 +120,7 @@ def rag_query():
         vector=embedding.data[0].embedding,
         top_k=5,
     )
-    return jsonify({"results": results})
+    return {"results": results}
 ```
 
 **The agent didn't get smarter. The pipeline caught the problems.**
